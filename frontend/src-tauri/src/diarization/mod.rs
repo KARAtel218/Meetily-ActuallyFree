@@ -1943,7 +1943,10 @@ mod tests {
     /// silent system track. Run with MEETILY_DIARIZATION_MODELS set to a folder
     /// with the Pyannote models and MEETILY_ROOM_FIXTURE set to a folder holding
     /// 16 kHz mono `mic.wav` and `system.wav`; MEETILY_ROOM_SPEAKERS is the
-    /// number of voices on the microphone (default 2). It only reads the user
+    /// number of voices on the microphone (default 2). MEETILY_ROOM_ENGINE picks
+    /// `pyannote` (default) or `nemotron`. With MEETILY_ROOM_USER_AT (seconds
+    /// inside one of the user's turns) and an enrolled voiceprint, the speaker
+    /// talking then must be the one matched as the user. It only reads the user
     /// voiceprint; the room path never enrolls it.
     #[test]
     #[ignore = "Requires Pyannote models and an in-person fixture"]
@@ -1951,10 +1954,11 @@ mod tests {
         let models = PathBuf::from(std::env::var("MEETILY_DIARIZATION_MODELS").expect("MEETILY_DIARIZATION_MODELS"));
         let fixture = PathBuf::from(std::env::var("MEETILY_ROOM_FIXTURE").expect("MEETILY_ROOM_FIXTURE"));
         let expected: usize = std::env::var("MEETILY_ROOM_SPEAKERS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let engine = std::env::var("MEETILY_ROOM_ENGINE").unwrap_or_else(|_| "pyannote".into());
         let (result, mic_is_room) = diarize_source_tracks(
             &fixture.join("mic.wav"),
             &fixture.join("system.wav"),
-            "pyannote",
+            &engine,
             &models,
             None,
             None,
@@ -1967,6 +1971,11 @@ mod tests {
         println!("speakers={} user={:?}", result.num_speakers, result.user_speaker);
         assert!(mic_is_room);
         assert_eq!(result.num_speakers, expected);
+        if let Some(at) = std::env::var("MEETILY_ROOM_USER_AT").ok().and_then(|v| v.parse::<f32>().ok()) {
+            let speaking = result.segments.iter().find(|seg| seg.start <= at && at < seg.end).map(|seg| seg.speaker);
+            assert!(speaking.is_some(), "nobody speaks at {at} s");
+            assert_eq!(result.user_speaker, speaking, "the user is the speaker at {at} s");
+        }
     }
 
     #[test]
