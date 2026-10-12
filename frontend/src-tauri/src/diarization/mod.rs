@@ -1015,7 +1015,7 @@ fn diarize_source_tracks(
         } else {
             diarize_file_with_models(mic_wav, model_dir, num_speakers, threshold)?
         };
-        return Ok((room, true));
+        return Ok(room_result(room));
     }
 
     if engine.eq_ignore_ascii_case("nemotron") {
@@ -1038,7 +1038,7 @@ fn diarize_source_tracks(
 
         if !single_speaker && !has_remote_speech(&system_result) {
             log::info!("🧑‍🤝‍🧑 No speech on the system track; keeping every microphone speaker");
-            return Ok((mic_result, true));
+            return Ok(room_result(mic_result));
         }
 
         let mut segments: Vec<DiarizationSegment> = mic_result
@@ -1090,7 +1090,7 @@ fn diarize_source_tracks(
     if !single_speaker && !has_remote_speech(&system_result) {
         log::info!("🧑‍🤝‍🧑 No speech on the system track; diarizing the microphone track as one room");
         let room = diarize_file_with_models(mic_wav, model_dir, num_speakers, threshold)?;
-        return Ok((room, true));
+        return Ok(room_result(room));
     }
 
     let mic_embeddings = embeddings_for_debug(mic_wav, model_dir).ok();
@@ -1741,6 +1741,24 @@ fn track_is_silent(wav: &Path) -> Result<bool> {
     Ok(samples.iter().all(|sample| sample.abs() < SILENT_TRACK_PEAK))
 }
 
+/// Marks an in-person result, keeping the earlier reading of a lone voice:
+/// with exactly one voice on the microphone and no enrolled voiceprint to
+/// contradict it, that voice is the user. Once a call has enrolled the
+/// voiceprint, it decides instead, so a recorded talk by someone else is not "You".
+fn room_result(mut room: DiarizationResult) -> (DiarizationResult, bool) {
+    if room.user_speaker.is_none() {
+        room.user_speaker = single_voice_user(&room, voiceprint::load().is_some());
+    }
+    (room, true)
+}
+
+fn single_voice_user(room: &DiarizationResult, has_voiceprint: bool) -> Option<usize> {
+    if has_voiceprint || room.num_speakers != 1 {
+        return None;
+    }
+    room.segments.first().map(|segment| segment.speaker)
+}
+
 fn has_remote_speech(system: &DiarizationResult) -> bool {
     let speech: f32 = system.segments.iter().map(|s| (s.end - s.start).max(0.0)).sum();
     speech >= MIN_REMOTE_SPEECH_SECONDS
@@ -1890,6 +1908,22 @@ mod tests {
         println!("speakers={} user={:?}", result.num_speakers, result.user_speaker);
         assert!(mic_is_room);
         assert_eq!(result.num_speakers, expected);
+    }
+
+    #[test]
+    fn a_lone_microphone_voice_is_the_user_until_a_voiceprint_exists() {
+        let room = |num_speakers: usize, segments: Vec<DiarizationSegment>| DiarizationResult {
+            segments,
+            num_speakers,
+            duration: 60.0,
+            user_speaker: None,
+        };
+        let lone = room(1, vec![segment(0, 0.0, 20.0), segment(0, 25.0, 50.0)]);
+        assert_eq!(single_voice_user(&lone, false), Some(0));
+        assert_eq!(single_voice_user(&lone, true), None);
+        let two = room(2, vec![segment(0, 0.0, 20.0), segment(1, 25.0, 50.0)]);
+        assert_eq!(single_voice_user(&two, false), None);
+        assert_eq!(single_voice_user(&room(0, vec![]), false), None);
     }
 
     #[test]

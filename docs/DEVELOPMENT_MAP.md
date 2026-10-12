@@ -160,9 +160,10 @@ With separate `mic.mp4`/`system.mp4` tracks, `diarize_source_tracks` reads the
 system track first. If it is silent (peak under about -60 dBFS) or has under
 5 s of detected speech, nobody spoke through the computer, so the meeting is
 treated as in-person. The microphone track is clustered like a single track
-(manual count = everyone in the room), and "You" comes only from a voiceprint
-match. Live "You" labels are not used there, because every voice in the room
-reached the microphone. Otherwise speaker 0 is the user, remote speakers come
+(manual count = everyone in the room), and "You" comes from a voiceprint match.
+A lone voice with no enrolled voiceprint stays "You", as before. Live "You"
+labels are not used there, because every voice in the room reached the
+microphone. Otherwise speaker 0 is the user, remote speakers come
 from the system track, and only that path enrolls the voiceprint. Unit tests
 cover the thresholds and the "You" rule. The ignored
 `in_person_fixture_keeps_every_microphone_speaker` test runs Pyannote on a
