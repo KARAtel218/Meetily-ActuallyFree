@@ -1010,12 +1010,12 @@ fn diarize_source_tracks(
 
     if !single_speaker && track_is_silent(system_wav)? {
         log::info!("🧑‍🤝‍🧑 System track is silent; diarizing the microphone track as one room");
-        let room = if engine.eq_ignore_ascii_case("nemotron") {
-            diarize_file_with_engine(mic_wav, "nemotron", num_speakers, threshold)?
-        } else {
-            diarize_file_with_models(mic_wav, model_dir, num_speakers, threshold)?
-        };
-        return Ok(room_result(room));
+        if engine.eq_ignore_ascii_case("nemotron") {
+            let room = diarize_file_with_engine(mic_wav, "nemotron", num_speakers, threshold)?;
+            return Ok(room_result(room, Some((mic_wav, model_dir))));
+        }
+        let room = diarize_file_with_models(mic_wav, model_dir, num_speakers, threshold)?;
+        return Ok(room_result(room, None));
     }
 
     if engine.eq_ignore_ascii_case("nemotron") {
@@ -1038,7 +1038,7 @@ fn diarize_source_tracks(
 
         if !single_speaker && !has_remote_speech(&system_result) {
             log::info!("🧑‍🤝‍🧑 No speech on the system track; keeping every microphone speaker");
-            return Ok(room_result(mic_result));
+            return Ok(room_result(mic_result, Some((mic_wav, model_dir))));
         }
 
         let mut segments: Vec<DiarizationSegment> = mic_result
@@ -1090,7 +1090,7 @@ fn diarize_source_tracks(
     if !single_speaker && !has_remote_speech(&system_result) {
         log::info!("🧑‍🤝‍🧑 No speech on the system track; diarizing the microphone track as one room");
         let room = diarize_file_with_models(mic_wav, model_dir, num_speakers, threshold)?;
-        return Ok(room_result(room));
+        return Ok(room_result(room, None));
     }
 
     let mic_embeddings = embeddings_for_debug(mic_wav, model_dir).ok();
@@ -1741,15 +1741,74 @@ fn track_is_silent(wav: &Path) -> Result<bool> {
     Ok(samples.iter().all(|sample| sample.abs() < SILENT_TRACK_PEAK))
 }
 
-/// Marks an in-person result, keeping the earlier reading of a lone voice:
-/// with exactly one voice on the microphone and no enrolled voiceprint to
-/// contradict it, that voice is the user. Once a call has enrolled the
-/// voiceprint, it decides instead, so a recorded talk by someone else is not "You".
-fn room_result(mut room: DiarizationResult) -> (DiarizationResult, bool) {
+/// Marks an in-person result and finds the user in it. Pyannote matches the
+/// voiceprint while clustering; for engines that do not (Nemotron), pass the
+/// microphone track and the Pyannote model folder to match it here. With
+/// exactly one voice and no enrolled voiceprint to contradict it, that voice is
+/// the user, as before rooms were told apart from calls. Once a voiceprint is
+/// enrolled, it decides instead, so a recorded talk by someone else is not "You".
+fn room_result(mut room: DiarizationResult, match_on: Option<(&Path, &Path)>) -> (DiarizationResult, bool) {
+    let has_voiceprint = voiceprint::load().is_some();
+    if room.user_speaker.is_none() && has_voiceprint {
+        if let Some((wav, model_dir)) = match_on {
+            room.user_speaker = match_user_by_voiceprint(wav, model_dir, &room);
+        }
+    }
     if room.user_speaker.is_none() {
-        room.user_speaker = single_voice_user(&room, voiceprint::load().is_some());
+        room.user_speaker = single_voice_user(&room, has_voiceprint);
     }
     (room, true)
+}
+
+/// Turns compared per speaker when matching the voiceprint after clustering.
+const VOICEPRINT_MATCH_TURNS: usize = 8;
+
+/// Which speaker sounds like the enrolled user, embedding up to a few clear
+/// turns (2 to 15 s, no overlap) per speaker with the Pyannote model.
+fn match_user_by_voiceprint(wav: &Path, model_dir: &Path, result: &DiarizationResult) -> Option<usize> {
+    if !dir_has_models(model_dir) {
+        return None;
+    }
+    let (samples, sr) = dsp::read_wav(wav).ok()?;
+    let samples = if sr != dsp::SAMPLE_RATE {
+        crate::audio::audio_processing::resample_audio(&samples, sr, dsp::SAMPLE_RATE)
+    } else {
+        samples
+    };
+    let mut models = DiarizationModels::load(model_dir).ok()?;
+    let rate = dsp::SAMPLE_RATE as f32;
+    let mut speakers: Vec<usize> = Vec::new();
+    let mut centroids: Vec<Vec<f32>> = Vec::new();
+    for speaker in 0..result.num_speakers {
+        let mut sum: Vec<f32> = Vec::new();
+        let mut turns = 0;
+        for seg in result.segments.iter().filter(|seg| seg.speaker == speaker && !seg.overlapped) {
+            if turns >= VOICEPRINT_MATCH_TURNS || !(2.0..=15.0).contains(&(seg.end - seg.start)) {
+                continue;
+            }
+            let (first, last) = ((seg.start * rate) as usize, (seg.end * rate) as usize);
+            if first >= last || last > samples.len() {
+                continue;
+            }
+            if let Ok(vector) = models.embed(&samples[first..last]) {
+                if sum.is_empty() {
+                    sum = vec![0.0; vector.len()];
+                }
+                if vector.len() == sum.len() {
+                    sum.iter_mut().zip(&vector).for_each(|(total, value)| *total += value);
+                    turns += 1;
+                }
+            }
+        }
+        if turns > 0 {
+            let norm = sum.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-8);
+            centroids.push(sum.iter().map(|v| v / norm).collect());
+            speakers.push(speaker);
+        }
+    }
+    let matched = voiceprint::match_cluster(&centroids).map(|index| speakers[index]);
+    log::info!("🧑‍🤝‍🧑 Voiceprint match among {} speakers: {:?}", speakers.len(), matched);
+    matched
 }
 
 fn single_voice_user(room: &DiarizationResult, has_voiceprint: bool) -> Option<usize> {
