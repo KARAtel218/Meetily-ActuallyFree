@@ -1445,14 +1445,17 @@ pub async fn diarize_meeting(
             }
         };
 
-        // Generated labels are not durable capture-source provenance. Preserve
-        // source hints without excluding genuine simultaneous speakers.
+        // Generated labels are not durable capture-source provenance. A fresh
+        // "You"/"Guest" source hint is, though: with separate tracks the line's
+        // words came from that track alone, so only that side's voices can
+        // label it. Without a hint, simultaneous speakers are kept.
+        let source = line_track(existing.as_deref(), used_source_tracks);
         let relevant_segments: Vec<&DiarizationSegment> = result
             .segments
             .iter()
             .filter(|seg| {
                 let ov = seg.end.min(e) - seg.start.max(s);
-                ov > 0.0
+                ov > 0.0 && track_allows(source, user_speaker, seg.speaker)
             })
             .collect();
 
@@ -1729,6 +1732,40 @@ fn collect_turns(models: &mut DiarizationModels, samples: &[f32]) -> Result<Vec<
     Ok(turns)
 }
 
+/// Which capture track a transcript line came from, when that is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineTrack {
+    Microphone,
+    System,
+}
+
+/// A line's capture track, from the source hint that live capture and
+/// retranscription write ("You" for the microphone, "Guest" for the system
+/// track) when diarization used separate tracks. A label from an earlier
+/// diarization pass is not provenance and gives `None`.
+fn line_track(existing: Option<&str>, used_source_tracks: bool) -> Option<LineTrack> {
+    let label = existing?.trim();
+    if !used_source_tracks {
+        None
+    } else if label.eq_ignore_ascii_case("you") {
+        Some(LineTrack::Microphone)
+    } else if label.eq_ignore_ascii_case("guest") {
+        Some(LineTrack::System)
+    } else {
+        None
+    }
+}
+
+/// Whether a diarized speaker can label a line from `track`: a microphone line
+/// is the user's words, a system line belongs to remote speakers only.
+fn track_allows(track: Option<LineTrack>, user_speaker: Option<usize>, speaker: usize) -> bool {
+    match (track, user_speaker) {
+        (Some(LineTrack::Microphone), Some(user)) => speaker == user,
+        (Some(LineTrack::System), Some(user)) => speaker != user,
+        _ => true,
+    }
+}
+
 /// Peak below which a decoded track counts as silent (about -60 dBFS). A system
 /// tap records exact zeros while nothing plays.
 const SILENT_TRACK_PEAK: f32 = 0.001;
@@ -1992,6 +2029,25 @@ mod tests {
         let two = room(2, vec![segment(0, 0.0, 20.0), segment(1, 25.0, 50.0)]);
         assert_eq!(single_voice_user(&two, false), None);
         assert_eq!(single_voice_user(&room(0, vec![]), false), None);
+    }
+
+    #[test]
+    fn source_hints_keep_lines_to_their_own_track() {
+        // A remote line while the user says "uh-huh" must not read "You + Speaker 1".
+        let system = line_track(Some("Guest"), true);
+        let mic = line_track(Some("You"), true);
+        assert_eq!(system, Some(LineTrack::System));
+        assert_eq!(mic, Some(LineTrack::Microphone));
+        assert!(!track_allows(system, Some(0), 0));
+        assert!(track_allows(system, Some(0), 1) && track_allows(system, Some(0), 2));
+        assert!(track_allows(mic, Some(0), 0));
+        assert!(!track_allows(mic, Some(0), 1));
+        // Earlier generated labels, rooms and mixed files keep every voice.
+        assert_eq!(line_track(Some("You + Speaker 1"), true), None);
+        assert_eq!(line_track(Some("Speaker 2"), true), None);
+        assert_eq!(line_track(Some("You"), false), None);
+        assert!(track_allows(None, Some(0), 1));
+        assert!(track_allows(system, None, 0));
     }
 
     #[test]

@@ -175,7 +175,14 @@ there is no separate track, and skips turns quieter than about -40 dBFS. Each
 meeting counts once. Unlike Labs voice profiles, it needs no Labs switch. Live "You"
 labels are not used there, because every voice in the room reached the
 microphone. Otherwise speaker 0 is the user, remote speakers come
-from the system track, and only that path enrolls the voiceprint. Unit tests
+from the system track, and only that path enrolls the voiceprint. On that call path,
+a line still carrying its capture hint ("You" from the microphone, "Guest" from
+the system track, as written by live capture and retranscription) is labelled
+from its own track only. A microphone line is "You". A system line gets only
+remote speakers, or "Guest" if none overlaps. Before this, a remote line spoken
+while the user said "uh-huh" read "You + Speaker 1": in one call, close to half
+the lines had such combined labels. Lines that already carry generated labels
+from an earlier pass have no hint, so they keep simultaneous speakers. Unit tests
 cover the thresholds and the "You" rule. The ignored
 `in_person_fixture_keeps_every_microphone_speaker` test runs Pyannote on a
 fixture: three synthetic voices over 41 s gave 3 speakers, with about 3 s at a
