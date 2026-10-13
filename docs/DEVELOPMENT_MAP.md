@@ -175,8 +175,9 @@ training data instead of transcribing. `strip_whisper_hallucination` in
 - A subtitle credit ("Субтитры создавал DimaTorzok", "Редактор субтитров …
   Корректор …") is cut along with everything after it.
 - A segment that is only "Продолжение следует" is dropped.
-- Phrases people do say ("you", "thank you", "Спасибо за просмотр") are dropped
-  only from quiet audio (RMS < 0.02).
+- Phrases people do say ("you", "thank you", "Спасибо", "Спасибо за просмотр")
+  are dropped only from quiet audio (RMS < 0.02). The same call had 29 lone
+  "Спасибо." lines on a call track below -40 dBFS.
 
 In one 44-minute call, 43 of 48 "Продолжение следует" lines came from a near-silent
 track; the other 5, and some credits, came from speech, so gating on energy alone

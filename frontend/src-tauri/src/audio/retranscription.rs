@@ -1097,11 +1097,12 @@ const SUBTITLE_CREDIT_MARKERS: [&str; 7] = [
 const ALWAYS_HALLUCINATED: [&str; 1] = ["продолжение следует"];
 /// Whole-segment phrases people do say, so they are dropped only from quiet
 /// audio (RMS below `QUIET_HALLUCINATION_RMS`).
-const QUIET_HALLUCINATED: [&str; 6] = [
+const QUIET_HALLUCINATED: [&str; 7] = [
     "you",
     "thank you",
     "thanks",
     "bye",
+    "спасибо",
     "спасибо за просмотр",
     "подписывайтесь на канал",
 ];
@@ -1171,6 +1172,10 @@ mod hallucination_tests {
     fn phrases_people_say_survive_unless_the_audio_is_quiet() {
         assert_eq!(strip_whisper_hallucination("Спасибо за просмотр!", 0.001), None);
         assert_eq!(strip_whisper_hallucination("Thank you.", 0.001), None);
+        // 29 such lines in one call, all on a call track below -40 dBFS.
+        assert_eq!(strip_whisper_hallucination("Спасибо.", 0.005), None);
+        assert_eq!(strip_whisper_hallucination("Спасибо.", 0.08), Some("Спасибо.".into()));
+        assert_eq!(strip_whisper_hallucination("Спасибо, Андрей.", 0.005), Some("Спасибо, Андрей.".into()));
         assert_eq!(strip_whisper_hallucination("Спасибо за просмотр!", 0.1), Some("Спасибо за просмотр!".into()));
         assert_eq!(strip_whisper_hallucination("Thank you.", 0.1), Some("Thank you.".into()));
         // Talk about subtitles or sequels is kept.
